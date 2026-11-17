@@ -1,0 +1,566 @@
+'==============================================================================
+' CODIGO DO USERFORM "frmGenebra"
+' Autor: Gilmar Barbosa  -  Autom
+' Crie um UserForm vazio, mude o (Name) para frmGenebra, abra o codigo (F7),
+' apague tudo e cole ESTE texto inteiro. Os controles sao criados por codigo.
+'==============================================================================
+Option Explicit
+
+Private mp As MSForms.MultiPage
+Private Campos As Object          ' id -> controle
+Private Tipos As Object           ' id -> "N" numero, "T" texto, "C" combo, "K" check
+Private Eventos As Collection
+Private txtRes As MSForms.TextBox
+Private lblRef As MSForms.Label
+Private lblTheta As MSForms.Label
+Private scrTheta As MSForms.ScrollBar
+Private Iniciando As Boolean
+
+Private Const LBLW As Single = 150
+Private Const CTLW As Single = 80
+Private Const ROWH As Single = 21
+Private Const COLW As Single = 256
+
+'------------------------------------------------------------------------------
+Private Sub UserForm_Initialize()
+    Dim y As Single
+    Iniciando = True
+    If swApp Is Nothing Then Set swApp = Application.SldWorks
+    Set Campos = CreateObject("Scripting.Dictionary")
+    Set Tipos = CreateObject("Scripting.Dictionary")
+    Set Eventos = New Collection
+
+    Me.Caption = "Gerador de Mecanismo Genebra - SOLIDWORKS 2024  |  Autom"
+    Me.Width = 540
+    Me.Height = 580
+
+    Set mp = Me.Controls.Add("Forms.MultiPage.1", "mpAbas")
+    mp.Left = 6: mp.Top = 6: mp.Width = 522: mp.Height = 440
+    Do While mp.Pages.Count < 7
+        mp.Pages.Add
+    Loop
+    mp.Pages(0).Caption = "Geral"
+    mp.Pages(1).Caption = "Roda"
+    mp.Pages(2).Caption = "Manivela"
+    mp.Pages(3).Caption = "Base e eixos"
+    mp.Pages(4).Caption = U("Sa\u00EDda")
+    mp.Pages(5).Caption = "Resultados"
+    mp.Pages(6).Caption = "Movimento"
+
+    MontarGeral mp.Pages(0)
+    MontarRoda mp.Pages(1)
+    MontarManivela mp.Pages(2)
+    MontarBase mp.Pages(3)
+    MontarSaida mp.Pages(4)
+    MontarResultados mp.Pages(5)
+    MontarMovimento mp.Pages(6)
+
+    y = 452
+    AddBotao Me, "calc", "Calcular", 6, y, 80
+    AddBotao Me, "salvar", "Salvar predef.", 92, y, 95
+    AddBotao Me, "carregar", "Carregar predef.", 193, y, 100
+    AddBotao Me, "gerar", "GERAR", 340, y, 90
+    AddBotao Me, "fechar", "Fechar", 436, y, 90
+
+    MontarRodape 482
+
+    mp.Value = 0
+    Iniciando = False
+    AtualizarRotuloRef
+    Recalcular
+End Sub
+
+' Fechar pelo X tambem interrompe uma animacao em curso
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    G_PararAnim = True
+End Sub
+
+Private Sub UserForm_Terminate()
+    Set Eventos = Nothing
+End Sub
+
+'------------------------------------------------------------------------------
+' RODAPE: logo Autom + autor
+' O logo (Autom_Logo.bmp) e procurado na pasta da macro (.swp) e depois em
+' Imagens do usuario. Sem o arquivo, o rodape mostra so o texto.
+'------------------------------------------------------------------------------
+Private Sub MontarRodape(y As Single)
+    Dim img As MSForms.Image, lb As MSForms.Label, arq As String
+    ' 1) Imagem colocada em modo de design (fica gravada dentro do .swp)
+    On Error Resume Next
+    Set img = Me.Controls("imgLogo")
+    On Error GoTo 0
+    ' 2) Senao, cria a imagem e carrega o arquivo .bmp
+    If img Is Nothing Then
+        Set img = Me.Controls.Add("Forms.Image.1", "imgLogo")
+        arq = CaminhoLogo()
+        If arq <> "" Then
+            On Error Resume Next
+            Set img.Picture = LoadPicture(arq)
+            On Error GoTo 0
+        End If
+    End If
+    img.Left = 6: img.Top = y: img.Width = 106: img.Height = 40
+    img.BorderStyle = 0
+    img.PictureSizeMode = 3          ' zoom mantendo a proporcao
+    Set lb = Me.Controls.Add("Forms.Label.1", "lblAutor")
+    lb.Left = 122: lb.Top = y + 5: lb.Width = 400: lb.Height = 32
+    lb.Font.Size = 9
+    lb.Caption = "Autor: Gilmar Barbosa" & vbCrLf & "Autom - Gerador de Mecanismo Genebra para SOLIDWORKS"
+End Sub
+
+Private Function CaminhoLogo() As String
+    Dim p As String, k As Long
+    On Error Resume Next
+    p = swApp.GetCurrentMacroPathName
+    k = InStrRev(p, "\")
+    If k > 0 Then
+        p = Left$(p, k) & "Autom_Logo.bmp"
+        If Dir(p) <> "" Then CaminhoLogo = p: Exit Function
+    End If
+    p = Environ("USERPROFILE") & "\Pictures\Autom_Logo.bmp"
+    If Dir(p) <> "" Then CaminhoLogo = p
+End Function
+
+'------------------------------------------------------------------------------
+' ABAS
+'------------------------------------------------------------------------------
+Private Sub MontarGeral(pg As Object)
+    AddNum pg, "n", U("N\u00BA de ranhuras (3 a 18)"), 6, 0, 0
+    AddCombo pg, "pinos", U("N\u00BA de pinos na manivela"), "1|2", 0, 1, 0, False
+    AddCombo pg, "modo", "Modo de dimensionamento", U("Dist\u00E2ncia entre centros (C)|Raio da manivela (r)|Di\u00E2metro externo da roda"), 0, 0, 1, False, 250
+    AddNum pg, "ref", U("Valor de refer\u00EAncia"), 100, 0, 2, "mm"
+    Set lblRef = pg.Controls("lbl_ref")
+    AddNum pg, "gap", U("Folga axial entre pe\u00E7as"), 0.5, 1, 2, "mm"
+    AddCombo pg, "sentido", "Sentido da manivela", U("Anti-hor\u00E1rio|Hor\u00E1rio"), 0, 0, 3, False
+    AddNum pg, "rpm", U("Rota\u00E7\u00E3o da manivela"), 60, 1, 3, "rpm"
+    AddNum pg, "theta0", U("\u00C2ngulo inicial da manivela"), 0, 0, 4, U("\u00B0")
+    AddInfo pg, 0, 6, 500, 120, _
+        U("Conven\u00E7\u00F5es:") & vbCrLf & _
+        "- Centro da roda na origem da montagem; centro da manivela em (C, 0)." & vbCrLf & _
+        U("- \u00C2ngulo da manivela medido a partir de +X, anti-hor\u00E1rio visto de +Z.") & vbCrLf & _
+        U("- 0\u00B0 = pino apontando para fora da roda (meio da parada).") & vbCrLf & _
+        U("- Com 2 pinos, 90\u00B0 come\u00E7a em parada.") & vbCrLf & _
+        U("- Campos com '0 = auto' s\u00E3o calculados pela macro (veja a aba Resultados).")
+End Sub
+
+Private Sub MontarRoda(pg As Object)
+    AddNum pg, "tR", "Espessura da roda", 10, 0, 0, "mm"
+    AddNum pg, "fs", "Folga pino/ranhura", 0.2, 1, 0, "mm"
+    AddNum pg, "ffundo", "Folga no fundo da ranhura", 1, 0, 1, "mm"
+    AddNum pg, "RoMan", "Raio externo (0 = auto)", 0, 1, 1, "mm"
+    AddNum pg, "fl", "Folga do arco de travamento", 0.2, 0, 2, "mm"
+    AddNum pg, "ePonta", "Espessura da ponta do garfo", 1.5, 1, 2, "mm"
+    AddNum pg, "dFuroR", U("\u00D8 do furo (eixo)"), 12, 0, 3, "mm"
+    AddChk pg, "chavR", "Rasgo de chaveta", False, 1, 3
+    AddNum pg, "bChR", "Largura da chaveta", 4, 0, 4, "mm"
+    AddNum pg, "tChR", "Profundidade da chaveta", 2.5, 1, 4, "mm"
+    AddChk pg, "cuboR", "Cubo (lado da frente)", True, 0, 5
+    AddNum pg, "dCuboR", U("\u00D8 do cubo"), 30, 1, 5, "mm"
+    AddNum pg, "hCuboR", "Altura do cubo", 8, 0, 6, "mm"
+    AddCombo pg, "matR", "Material (nome da biblioteca)", ListaMateriais(), "AISI 1020", 0, 7, True, 250
+    AddCombo pg, "corR", "Cor", ListaCores(), "(sem cor)", 0, 8, False
+End Sub
+
+Private Sub MontarManivela(pg As Object)
+    AddNum pg, "dp", U("\u00D8 do pino"), 10, 0, 0, "mm"
+    AddNum pg, "hp", "Altura do pino (0 = auto)", 0, 1, 0, "mm"
+    AddNum pg, "tM", "Espessura da placa", 8, 0, 1, "mm"
+    AddCombo pg, "forma", "Formato da placa", U("Disco|Bra\u00E7o"), 0, 1, 1, False
+    AddNum pg, "bBraco", U("Largura do bra\u00E7o (0 = auto)"), 0, 0, 2, "mm"
+    AddNum pg, "RmMan", "Raio do disco (0 = auto)", 0, 1, 2, "mm"
+    AddNum pg, "tL", "Esp. disco travamento (0=auto)", 0, 0, 3, "mm"
+    AddNum pg, "RsMan", "Raio Rs travamento (0=auto)", 0, 1, 3, "mm"
+    AddNum pg, "fa", U("Folga do al\u00EDvio"), 0.5, 0, 4, "mm"
+    AddNum pg, "dFuroM", U("\u00D8 do furo (eixo)"), 12, 1, 4, "mm"
+    AddChk pg, "chavM", "Rasgo de chaveta", False, 0, 5
+    AddNum pg, "bChM", "Largura da chaveta", 4, 1, 5, "mm"
+    AddNum pg, "tChM", "Profundidade da chaveta", 2.5, 0, 6, "mm"
+    AddChk pg, "cuboM", U("Cubo (lado de tr\u00E1s)"), True, 1, 6
+    AddNum pg, "dCuboM", U("\u00D8 do cubo"), 30, 0, 7, "mm"
+    AddNum pg, "hCuboM", "Altura do cubo", 8, 1, 7, "mm"
+    AddCombo pg, "matM", "Material (nome da biblioteca)", ListaMateriais(), "AISI 1020", 0, 8, True, 250
+    AddCombo pg, "corM", "Cor", ListaCores(), "(sem cor)", 0, 9, False
+End Sub
+
+Private Sub MontarBase(pg As Object)
+    AddChk pg, "gBase", "Gerar placa base (corpo)", True, 0, 0
+    AddNum pg, "tB", "Espessura da base", 8, 1, 0, "mm"
+    AddNum pg, "mB", "Margem em volta", 15, 0, 1, "mm"
+    AddNum pg, "rcB", "Raio dos cantos", 5, 1, 1, "mm"
+    AddCombo pg, "nFix", U("Furos de fixa\u00E7\u00E3o"), "0|4", 1, 0, 2, False
+    AddNum pg, "dFix", U("\u00D8 furos de fixa\u00E7\u00E3o"), 6.5, 1, 2, "mm"
+    AddCombo pg, "matB", "Material da base", ListaMateriais(), "6061-T6 (SS)", 0, 3, True, 250
+    AddCombo pg, "corB", "Cor da base", ListaCores(), "(sem cor)", 0, 4, False
+    AddChk pg, "gEixos", U("Gerar eixos (pe\u00E7as)"), True, 0, 5
+    AddNum pg, "sobra", U("Sobra do eixo acima da pe\u00E7a"), 2, 1, 5, "mm"
+    AddCombo pg, "matE", "Material dos eixos", ListaMateriais(), "AISI 1020", 0, 6, True, 250
+    AddCombo pg, "corE", "Cor dos eixos", ListaCores(), "(sem cor)", 0, 7, False
+    AddInfo pg, 0, 8, 500, 80, _
+        U("Os eixos usam o mesmo \u00D8 dos furos da roda e da manivela.") & vbCrLf & _
+        U("Sem placa base, a pe\u00E7a 'Base' \u00E9 criada s\u00F3 com eixos e planos de refer\u00EAncia,") & vbCrLf & _
+        "que a montagem usa nos mates."
+End Sub
+
+Private Sub MontarSaida(pg As Object)
+    AddTxt pg, "pasta", U("Pasta de sa\u00EDda"), Environ("USERPROFILE") & "\Documents\Genebra", 0, 0, 290
+    AddBotao pg, "procurar", "Procurar...", 452, 10 + 0 * ROWH - 1, 60
+    AddTxt pg, "prefixo", "Prefixo (vazio = auto)", "", 0, 1, 150
+    AddChk pg, "sobrescrever", "Sobrescrever arquivos", False, 0, 2
+    AddChk pg, "gCSV", U("Gerar CSV da cinem\u00E1tica"), True, 1, 2
+    AddNum pg, "passoCSV", "Passo do CSV", 1, 0, 3, U("\u00B0")
+    AddTxt pg, "tplPeca", U("Template de pe\u00E7a (opcional)"), "", 0, 4, 340
+    AddTxt pg, "tplMont", "Template de montagem (opcional)", "", 0, 5, 340
+    AddInfo pg, 0, 7, 500, 90, _
+        U("Prefixo autom\u00E1tico: GEN_n<ranhuras>_C<dist\u00E2ncia>_") & vbCrLf & _
+        "Arquivos: Roda, Manivela, Base, EixoRoda, EixoManivela, Montagem," & vbCrLf & _
+        "Cinematica.csv e LEIA-ME_Motion.txt." & vbCrLf & _
+        U("Templates em branco = modelos padr\u00E3o de Ferramentas > Op\u00E7\u00F5es.") & vbCrLf & _
+        U("A predefini\u00E7\u00E3o \u00E9 salva como GenebraPreset.ini na pasta de sa\u00EDda.")
+End Sub
+
+Private Sub MontarResultados(pg As Object)
+    Set txtRes = pg.Controls.Add("Forms.TextBox.1", "txtRes")
+    With txtRes
+        .Left = 6: .Top = 6: .Width = 504: .Height = 400
+        .MultiLine = True
+        .ScrollBars = 2
+        .WordWrap = False
+        .Locked = True
+        .Font.Name = "Consolas"
+        .Font.Size = 9
+    End With
+End Sub
+
+Private Sub MontarMovimento(pg As Object)
+    Dim lb As MSForms.Label, ev As clsEvento
+    Set lb = pg.Controls.Add("Forms.Label.1")
+    lb.Caption = U("\u00C2ngulo da manivela"): lb.Left = 8: lb.Top = 14: lb.Width = 110
+    Set scrTheta = pg.Controls.Add("Forms.ScrollBar.1", "scrTheta")
+    With scrTheta
+        .Left = 120: .Top = 10: .Width = 300: .Height = 18
+        .Min = 0: .Max = 360: .SmallChange = 1: .LargeChange = 15
+        .Orientation = 1
+    End With
+    Set ev = New clsEvento
+    Set ev.Owner = Me: ev.Tag = "theta": Set ev.Scr = scrTheta
+    Eventos.Add ev
+    Set lblTheta = pg.Controls.Add("Forms.Label.1")
+    lblTheta.Left = 428: lblTheta.Top = 14: lblTheta.Width = 70: lblTheta.Caption = U("0\u00B0")
+
+    AddChk pg, "rebuild", "Reconstruir a cada passo", False, 0, 2
+    AddNum pg, "voltas", "Voltas da manivela", 2, 0, 3
+    AddNum pg, "passos", "Passos por volta", 72, 1, 3
+    AddNum pg, "atraso", "Atraso entre passos", 20, 0, 4, "ms"
+    AddBotao pg, "posicionar", "Posicionar", 8, 10 + 5 * ROWH + 4, 90
+    AddBotao pg, "animar", "Animar", 104, 10 + 5 * ROWH + 4, 90
+    AddBotao pg, "parar", "Parar", 200, 10 + 5 * ROWH + 4, 90
+    AddInfo pg, 0, 7, 500, 120, _
+        "Abra e ATIVE a montagem gerada (ela guarda os dados em propriedades GEN_*)." & vbCrLf & _
+        U("Durante Posicionar/Animar o modelo pode ser girado e ampliado; Parar ou ESC interrompe.") & vbCrLf & _
+        U("A macro gira roda e manivela pela cinem\u00E1tica exata do Genebra.") & vbCrLf & _
+        U("O sentido de rota\u00E7\u00E3o usa o campo da aba Geral.") & vbCrLf & _
+        U("Se a tela n\u00E3o atualizar, marque 'Reconstruir a cada passo'.") & vbCrLf & _
+        U("Para simula\u00E7\u00E3o f\u00EDsica (contato + motor) siga o arquivo LEIA-ME_Motion.txt.")
+End Sub
+
+'------------------------------------------------------------------------------
+' CRIACAO DE CONTROLES
+'------------------------------------------------------------------------------
+Private Function XCol(col As Integer) As Single
+    XCol = 8 + col * COLW
+End Function
+
+Private Function YRow(row As Integer) As Single
+    YRow = 10 + row * ROWH
+End Function
+
+Private Sub AddRotulo(pg As Object, id As String, cap As String, col As Integer, row As Integer)
+    Dim lb As MSForms.Label
+    Set lb = pg.Controls.Add("Forms.Label.1", "lbl_" & id)
+    lb.Caption = cap
+    lb.Left = XCol(col): lb.Top = YRow(row) + 3
+    lb.Width = LBLW: lb.Height = 14
+End Sub
+
+Private Sub AddNum(pg As Object, id As String, cap As String, padrao As Double, col As Integer, row As Integer, Optional unid As String = "")
+    Dim tb As MSForms.TextBox
+    If unid <> "" Then cap = cap & " [" & unid & "]"
+    AddRotulo pg, id, cap, col, row
+    Set tb = pg.Controls.Add("Forms.TextBox.1", "f_" & id)
+    tb.Left = XCol(col) + LBLW + 2: tb.Top = YRow(row)
+    tb.Width = CTLW: tb.Height = 17
+    tb.Text = CStr(padrao)
+    Registrar id, "N", tb
+End Sub
+
+Private Sub AddTxt(pg As Object, id As String, cap As String, padrao As String, col As Integer, row As Integer, largura As Single)
+    Dim tb As MSForms.TextBox
+    AddRotulo pg, id, cap, col, row
+    Set tb = pg.Controls.Add("Forms.TextBox.1", "f_" & id)
+    tb.Left = XCol(col) + LBLW + 2: tb.Top = YRow(row)
+    tb.Width = largura: tb.Height = 17
+    tb.Text = padrao
+    Registrar id, "T", tb
+End Sub
+
+' itens separados por "|". padrao: indice (numero) ou texto.
+Private Sub AddCombo(pg As Object, id As String, cap As String, itens As String, padrao As Variant, col As Integer, row As Integer, editavel As Boolean, Optional largura As Single = 0)
+    Dim cb As MSForms.ComboBox, v As Variant, i As Long
+    AddRotulo pg, id, cap, col, row
+    Set cb = pg.Controls.Add("Forms.ComboBox.1", "f_" & id)
+    cb.Left = XCol(col) + LBLW + 2: cb.Top = YRow(row)
+    If largura > 0 Then cb.Width = largura Else cb.Width = CTLW + 20
+    cb.Height = 17
+    v = Split(itens, "|")
+    For i = LBound(v) To UBound(v)
+        cb.AddItem v(i)
+    Next
+    If editavel Then cb.Style = 0 Else cb.Style = 2
+    If VarType(padrao) = vbString Then
+        ' seleciona pelo indice: .Text em lista suspensa (Style 2) pode nao pegar
+        For i = 0 To cb.ListCount - 1
+            If LCase(cb.List(i)) = LCase(CStr(padrao)) Then cb.ListIndex = i: Exit For
+        Next
+        If cb.ListIndex < 0 And editavel Then cb.Text = padrao
+    Else
+        cb.ListIndex = CLng(padrao)
+    End If
+    Registrar id, "C", cb
+End Sub
+
+Private Sub AddChk(pg As Object, id As String, cap As String, padrao As Boolean, col As Integer, row As Integer)
+    Dim ck As MSForms.CheckBox
+    Set ck = pg.Controls.Add("Forms.CheckBox.1", "f_" & id)
+    ck.Caption = cap
+    ck.Left = XCol(col): ck.Top = YRow(row)
+    ck.Width = LBLW + CTLW: ck.Height = 17
+    ck.Value = padrao
+    Registrar id, "K", ck
+End Sub
+
+Private Sub AddInfo(pg As Object, col As Integer, row As Integer, largura As Single, altura As Single, txt As String)
+    Dim lb As MSForms.Label
+    Set lb = pg.Controls.Add("Forms.Label.1")
+    lb.Left = XCol(col): lb.Top = YRow(row)
+    lb.Width = largura: lb.Height = altura
+    lb.WordWrap = True
+    lb.ForeColor = RGB(70, 70, 70)
+    lb.Caption = txt
+End Sub
+
+Private Sub AddBotao(parent As Object, id As String, cap As String, x As Single, y As Single, largura As Single)
+    Dim bt As MSForms.CommandButton, ev As clsEvento
+    Set bt = parent.Controls.Add("Forms.CommandButton.1", "b_" & id)
+    bt.Caption = cap
+    bt.Left = x: bt.Top = y: bt.Width = largura: bt.Height = 22
+    Set ev = New clsEvento
+    Set ev.Owner = Me: ev.Tag = id: Set ev.Btn = bt
+    Eventos.Add ev
+End Sub
+
+Private Sub Registrar(id As String, kind As String, ctl As Object)
+    Dim ev As clsEvento
+    Campos.Add id, ctl
+    Tipos.Add id, kind
+    Set ev = New clsEvento
+    Set ev.Owner = Me
+    ev.Tag = id
+    Select Case kind
+        Case "N", "T": Set ev.Txt = ctl
+        Case "C": Set ev.Cmb = ctl
+        Case "K": Set ev.Chk = ctl
+    End Select
+    Eventos.Add ev
+End Sub
+
+Private Function ListaMateriais() As String
+    ListaMateriais = U("AISI 1020|AISI 1045 A\u00E7o, estirado a frio|A\u00E7o carbono comum|6061-T6 (SS)|Liga 6061-T6 (SS)|7075-T6 (SN)|Acetal (POM)|Nylon 6/10|Lat\u00E3o")
+End Function
+
+Private Function ListaCores() As String
+    ListaCores = "(sem cor)|Cinza|Cinza claro|Cinza escuro|Azul|Vermelho|Verde|Amarelo|Laranja|Preto|Branco"
+End Function
+
+'------------------------------------------------------------------------------
+' EVENTOS (chamados por clsEvento)
+'------------------------------------------------------------------------------
+Public Sub OnCampo(id As String)
+    If Iniciando Then Exit Sub
+    If id = "modo" Then AtualizarRotuloRef
+    If id = "aoVivo" Or id = "rebuild" Or id = "voltas" Or id = "passos" Or id = "atraso" Then Exit Sub
+    Recalcular
+End Sub
+
+Public Sub OnScroll(id As String)
+    Dim msg As String
+    If Iniciando Then Exit Sub
+    lblTheta.Caption = scrTheta.Value & U("\u00B0")
+End Sub
+
+Public Sub OnBotao(id As String)
+    Dim msg As String
+    Select Case id
+        Case "calc"
+            Recalcular
+            mp.Value = 5
+        Case "gerar"
+            LerParametros
+            txtRes.Text = "Gerando... aguarde."
+            mp.Value = 5
+            DoEvents
+            txtRes.Text = Gerar()
+        Case "salvar"
+            SalvarPreset
+        Case "carregar"
+            CarregarPreset
+        Case "procurar"
+            ProcurarPasta
+        Case "fechar"
+            G_PararAnim = True
+            Unload Me
+        Case "posicionar"
+            LerParametros
+            msg = PosicionarTheta(CDbl(scrTheta.Value), PB("rebuild"))
+            If msg <> "" Then MsgBox msg, vbExclamation
+        Case "animar"
+            LerParametros
+            msg = Animar(PN("voltas"), CLng(PN("passos")), PN("atraso"), _
+                         (CLng(PN("sentido")) = 1), CDbl(scrTheta.Value), PB("rebuild"))
+            If msg <> "" Then MsgBox msg, vbExclamation
+        Case "parar"
+            G_PararAnim = True
+    End Select
+End Sub
+
+'------------------------------------------------------------------------------
+' PARAMETROS / CALCULO
+'------------------------------------------------------------------------------
+Private Function ParseNum(s As String) As Double
+    ParseNum = Val(Replace(Trim(s), ",", "."))
+End Function
+
+Private Sub LerParametros()
+    Dim k As Variant, c As Object
+    Set Prm = CreateObject("Scripting.Dictionary")
+    For Each k In Campos.Keys
+        Set c = Campos(k)
+        Select Case Tipos(k)
+            Case "N"
+                Prm(k) = ParseNum(c.Text)
+            Case "T"
+                Prm(k & "$") = c.Text
+            Case "C"
+                Prm(k) = c.ListIndex
+                Prm(k & "$") = c.Text
+            Case "K"
+                If c.Value Then Prm(k) = 1 Else Prm(k) = 0
+        End Select
+    Next
+    ' combos numericos: usam o texto do item
+    Prm("pinos") = Val(Prm("pinos$"))
+    Prm("nFix") = Val(Prm("nFix$"))
+End Sub
+
+Private Sub Recalcular()
+    Dim msgs As New Collection, ok As Boolean
+    On Error GoTo Falha
+    LerParametros
+    ok = Calcular(msgs)
+    txtRes.Text = TextoResultados(ok, msgs)
+    Exit Sub
+Falha:
+    txtRes.Text = U("Valores inv\u00E1lidos: ") & Err.Description
+End Sub
+
+Private Sub AtualizarRotuloRef()
+    If lblRef Is Nothing Then Exit Sub
+    Select Case Campos("modo").ListIndex
+        Case 1: lblRef.Caption = "Raio da manivela r [mm]"
+        Case 2: lblRef.Caption = U("Di\u00E2metro externo da roda [mm]")
+        Case Else: lblRef.Caption = U("Dist\u00E2ncia entre centros C [mm]")
+    End Select
+End Sub
+
+'------------------------------------------------------------------------------
+' PREDEFINICOES
+'------------------------------------------------------------------------------
+Private Function ArqPreset() As String
+    Dim p As String
+    p = Trim(Campos("pasta").Text)
+    If Right(p, 1) = "\" Then p = Left(p, Len(p) - 1)
+    ArqPreset = p & "\GenebraPreset.ini"
+End Function
+
+Private Sub SalvarPreset()
+    Dim fnum As Integer, k As Variant, v As String, p As String
+    On Error GoTo Falha
+    p = Trim(Campos("pasta").Text)
+    If p = "" Then MsgBox U("Informe a pasta de sa\u00EDda."), vbExclamation: Exit Sub
+    If Dir(p, vbDirectory) = "" Then MkDir p
+    fnum = FreeFile
+    Open ArqPreset() For Output As #fnum
+    For Each k In Campos.Keys
+        If Tipos(k) = "K" Then
+            If Campos(k).Value Then v = "1" Else v = "0"
+        Else
+            v = Campos(k).Text
+        End If
+        Print #fnum, k & "=" & v
+    Next
+    Close #fnum
+    MsgBox U("Predefini\u00E7\u00E3o salva em:") & vbCrLf & ArqPreset(), vbInformation
+    Exit Sub
+Falha:
+    MsgBox U("N\u00E3o foi poss\u00EDvel salvar: ") & Err.Description, vbExclamation
+End Sub
+
+Private Sub CarregarPreset()
+    Dim fnum As Integer, linha As String, k As String, v As String, p As Long
+    On Error GoTo Falha
+    If Dir(ArqPreset()) = "" Then MsgBox U("Arquivo n\u00E3o encontrado:") & vbCrLf & ArqPreset(), vbExclamation: Exit Sub
+    Iniciando = True
+    fnum = FreeFile
+    Open ArqPreset() For Input As #fnum
+    Do While Not EOF(fnum)
+        Line Input #fnum, linha
+        p = InStr(linha, "=")
+        If p > 0 Then
+            k = Left(linha, p - 1): v = Mid(linha, p + 1)
+            If Campos.Exists(k) Then
+                If Tipos(k) = "K" Then
+                    Campos(k).Value = (v = "1")
+                ElseIf Tipos(k) = "C" Then
+                    SelecionarCombo Campos(k), v
+                Else
+                    Campos(k).Text = v
+                End If
+            End If
+        End If
+    Loop
+    Close #fnum
+    Iniciando = False
+    AtualizarRotuloRef
+    Recalcular
+    Exit Sub
+Falha:
+    Iniciando = False
+    MsgBox U("N\u00E3o foi poss\u00EDvel carregar: ") & Err.Description, vbExclamation
+End Sub
+
+' Lista suspensa (Style 2): escolhe pelo indice; combo editavel aceita texto livre.
+Private Sub SelecionarCombo(cb As Object, v As String)
+    Dim i As Long
+    For i = 0 To cb.ListCount - 1
+        If LCase(cb.List(i)) = LCase(v) Then cb.ListIndex = i: Exit Sub
+    Next
+    If cb.Style = 0 Then cb.Text = v
+End Sub
+
+Private Sub ProcurarPasta()
+    Dim sh As Object, fo As Object
+    On Error Resume Next
+    Set sh = CreateObject("Shell.Application")
+    Set fo = sh.BrowseForFolder(0, U("Pasta de sa\u00EDda"), 0)
+    If Not fo Is Nothing Then Campos("pasta").Text = fo.Self.Path
+End Sub
